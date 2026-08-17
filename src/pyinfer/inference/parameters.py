@@ -5,10 +5,14 @@ class ParameterMap:
     def __init__(self, signal_names, background_names, poi="eps_S"):
         self.signal_names = tuple(signal_names)
         self.background_names = tuple(background_names)
-        self.poi = poi
 
         names = ("eps_S", "eps_B") + self.signal_names + self.background_names
         self.names = tuple(dict.fromkeys(names))
+
+        if poi not in self.names:
+            raise ValueError(f"Unknown POI: {poi}")
+
+        self.poi = poi
 
     @property
     def nuisance_names(self):
@@ -65,6 +69,9 @@ class ParameterMap:
 
 
 def get_parameter_map(model_name, degree=1):
+    if not isinstance(degree, int) or degree < 0:
+        raise ValueError("degree must be a non-negative integer")
+
     coeffs = tuple(f"c{i}" for i in range(degree + 1))
 
     if model_name == "GaussEMGLeftPolyStep":

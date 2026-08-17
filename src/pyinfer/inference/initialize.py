@@ -89,12 +89,23 @@ def get_initial_params(model_name, bin_edges, bin_contents, degree=1):
     def nll(pars):
         expected = model.integral(x_lo, x_hi, *pars)
 
-        if np.any(~np.isfinite(expected)) or np.any(expected <= 0):
+        if np.any(~np.isfinite(expected)) or np.any(expected < 0):
             return np.inf
 
         return -np.sum(stats.poisson.logpmf(y, expected))
 
     result = minimize(nll, p0, method="L-BFGS-B", bounds=bounds)
 
-    params = dict(zip(names, result.x))
-    return params, result
+    limits = {
+        "eps_S": (0, 1),
+        "eps_B": (0, 1),
+        **dict(zip(names, bounds)),
+    }
+
+    if np.isfinite(result.fun) and np.all(np.isfinite(result.x)):
+        values = result.x
+    else:
+        values = p0
+
+    params = dict(zip(names, values))
+    return params, limits, result

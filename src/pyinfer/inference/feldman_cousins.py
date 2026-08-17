@@ -1,8 +1,7 @@
-import warnings
 import numpy as np
 from dataclasses import dataclass
 
-from .profile import profile_scan
+from .profile import profile_likelihood_ratio, profile_scan
 
 
 @dataclass
@@ -25,6 +24,10 @@ class FeldmanCousinsResult:
     points: list
 
     @property
+    def poi_values(self):
+        return np.asarray([point.poi_value for point in self.points])
+
+    @property
     def accepted_values(self):
         return np.asarray([point.poi_value for point in self.points if point.accepted])
 
@@ -43,57 +46,60 @@ class FeldmanCousinsResult:
 
 class FeldmanCousins:
     def __init__(self, problem, fitter, confidence_level=0.9, n_toys=1000, seed=None):
+        if not 0 < confidence_level < 1:
+            raise ValueError("confidence_level must be between 0 and 1")
+
+        if not isinstance(n_toys, int) or n_toys <= 0:
+            raise ValueError("n_toys must be a positive integer")
+
         self.problem = problem
         self.fitter = fitter
         self.confidence_level = confidence_level
         self.n_toys = n_toys
         self.seed = seed
 
-    @staticmethod
-    def _format_toys(samples):
-        if isinstance(samples, np.ndarray):
-            return samples
+    def _toy_statistic(self, toy, poi_value, generation_params):
+        result = profile_likelihood_ratio(
+            self.fitter,
+            toy,
+            poi_value,
+            start=generation_params,
+        )
 
-        toys = [
-            np.stack((before, after), axis=-1)
-            for before, after in samples
-        ]
+        if not result.valid:
+            return np.nan
 
-        return np.stack(toys, axis=1)
+        return result.q
 
-    def _toy_statistics(self, poi_value, generation_params):
-        samples = self.problem.sample(generation_params, size=self.n_toys)
-        toys = self._format_toys(samples)
+    def _toy_statistics(self, poi_value, generation_params, seed_sequence):
+        toy_seeds = seed_sequence.spawn(self.n_toys)
+        q_toys = np.full(self.n_toys, np.nan)
 
-        q_toys = []
-        n_failed = 0
-        poi = self.fitter.parameter_map.poi
+        for i, seed in enumerate(toy_seeds):
+            rng = np.random.default_rng(seed)
 
-        for toy in toys:
-            global_fit = self.fitter.fit(toy, start=generation_params)
+            toy = self.problem.sample(
+                generation_params,
+                size=1,
+                rng=rng,
+            )[0]
 
-            if not global_fit.valid:
-                n_failed += 1
-                continue
-
-            conditional_fit = self.fitter.fit(
+            q_toys[i] = self._toy_statistic(
                 toy,
-                start=global_fit.values,
-                fixed={poi: poi_value},
+                poi_value,
+                generation_params,
             )
 
-            if not conditional_fit.valid:
-                n_failed += 1
-                continue
-
-            q = max(0.0, 2.0 * (conditional_fit.nll - global_fit.nll))
-            q_toys.append(q)
-
-        return np.asarray(q_toys), n_failed
+        return q_toys
 
     def run(self, data, poi_values, start):
-        if self.seed is not None:
-            np.random.seed(self.seed)
+        poi_values = np.asarray(poi_values, dtype=float)
+
+        if poi_values.ndim != 1 or len(poi_values) == 0:
+            raise ValueError("poi_values must be a non-empty one-dimensional array")
+
+        if np.any(~np.isfinite(poi_values)):
+            raise ValueError("poi_values must be finite")
 
         profiles = profile_scan(
             self.fitter,
@@ -102,43 +108,57 @@ class FeldmanCousins:
             start,
         )
 
+        root_seed = np.random.SeedSequence(self.seed)
+        point_seeds = root_seed.spawn(len(profiles))
+
         points = []
 
-        for profile in profiles:
+        for profile, point_seed in zip(profiles, point_seeds):
             if not profile.valid:
-                raise RuntimeError(f"Observed fit failed for {self.fitter.parameter_map.poi}={profile.poi_value}")
-
-            generation_params = dict(profile.conditional_fit.values)
-
-            q_toys, n_failed = self._toy_statistics(
-                profile.poi_value,
-                generation_params,
-            )
-
-            if len(q_toys) == 0:
-                raise RuntimeError(f"All toy fits failed for {self.fitter.parameter_map.poi}={profile.poi_value}")
-
-            if n_failed > 0:
-                warnings.warn(
-                    f"{n_failed}/{self.n_toys} toy fits failed for "
+                raise RuntimeError(
+                    f"Observed profile fit failed for "
                     f"{self.fitter.parameter_map.poi}={profile.poi_value}"
                 )
 
-            q_crit = np.quantile(q_toys, self.confidence_level, method="higher")
-            p_value = (np.count_nonzero(q_toys >= profile.q) + 1) / (len(q_toys) + 1)
+            generation_params = dict(profile.conditional_fit.values)
+
+            q_toys = self._toy_statistics(
+                profile.poi_value,
+                generation_params,
+                point_seed,
+            )
+
+            failed = np.flatnonzero(~np.isfinite(q_toys))
+
+            if len(failed) > 0:
+                raise RuntimeError(
+                    f"{len(failed)}/{self.n_toys} toy fits failed for "
+                    f"{self.fitter.parameter_map.poi}={profile.poi_value}. "
+                    f"Failed toy indices: {failed.tolist()}"
+                )
+
+            q_crit = np.quantile(
+                q_toys,
+                self.confidence_level,
+                method="higher",
+            )
+
+            p_value = (
+                np.count_nonzero(q_toys >= profile.q) + 1
+            ) / (self.n_toys + 1)
 
             points.append(
                 FCPointResult(
                     poi_value=profile.poi_value,
                     q_obs=profile.q,
-                    q_crit=q_crit,
-                    p_value=p_value,
+                    q_crit=float(q_crit),
+                    p_value=float(p_value),
                     accepted=profile.q <= q_crit,
                     generation_params=generation_params,
                     q_toys=q_toys,
                     n_toys=self.n_toys,
-                    n_valid=len(q_toys),
-                    n_failed=n_failed,
+                    n_valid=self.n_toys,
+                    n_failed=0,
                 )
             )
 
