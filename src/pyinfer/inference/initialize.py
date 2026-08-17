@@ -25,11 +25,29 @@ def get_initial_params(model_name, bin_edges, bin_contents, degree=1):
     if model_name not in MODELS:
         raise ValueError(f"Unknown model: {model_name}")
 
+    if edges.ndim != 1 or y.ndim != 1:
+        raise ValueError("bin_edges and bin_contents must be one-dimensional")
+
+    if not isinstance(degree, int) or degree < 0:
+        raise ValueError("degree must be a non-negative integer")
+
     if len(edges) != len(y) + 1:
         raise ValueError("bin_edges must have length len(bin_contents) + 1")
 
     if len(y) < 3:
         raise ValueError("At least three bins are required")
+
+    if np.any(~np.isfinite(edges)) or np.any(np.diff(edges) <= 0):
+        raise ValueError("bin_edges must be finite and strictly increasing")
+
+    if np.any(~np.isfinite(y)) or np.any(y < 0):
+        raise ValueError("bin_contents must be finite and non-negative")
+
+    if np.any(y != np.floor(y)):
+        raise ValueError("bin_contents must contain integer counts")
+
+    if degree >= len(y):
+        raise ValueError("degree must be smaller than the number of bins")
 
     x_lo = edges[:-1]
     x_hi = edges[1:]

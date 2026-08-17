@@ -13,6 +13,8 @@ class Gauss(ModelBase):
     
 class EMG(ModelBase):
     def __init__(self, tail="left"):
+        if tail not in ("left", "right"):
+            raise ValueError("tail must be either 'left' or 'right'")
         self.tail = tail
 
     def __call__(self, x, A, mu, sig, tau):
