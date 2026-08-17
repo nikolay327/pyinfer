@@ -24,14 +24,19 @@ class ProfileResult:
         )
 
 
-def _compute_q(global_fit, conditional_fit, tol=1e-7):
+def _compute_q(global_fit, conditional_fit, tol=1e-8):
     if not global_fit.valid or not conditional_fit.valid:
         return np.nan
 
     delta = conditional_fit.nll - global_fit.nll
-    scale = max(1.0, abs(global_fit.nll), abs(conditional_fit.nll))
 
-    if delta < -tol * scale:
+    numerical_tol = max(
+        tol,
+        10.0 * global_fit.edm_goal,
+        10.0 * conditional_fit.edm_goal,
+    )
+
+    if delta < -numerical_tol:
         return np.nan
 
     return max(0.0, 2.0 * delta)
