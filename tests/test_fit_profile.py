@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 import numpy as np
 
 from pyinfer.inference.parameters import ParameterMap
@@ -101,3 +102,49 @@ def test_profile_scan_uses_one_global_fit():
 
     assert all(result.global_fit is global_fit for result in results)
     assert all(result.valid for result in results)
+
+def test_profile_conditional_start():
+    calls = []
+
+    class DummyFitter:
+        parameter_map = SimpleNamespace(poi="eps_S")
+
+        def fit(self, data, start, fixed=None, **kwargs):
+            calls.append(
+                (dict(start), fixed)
+            )
+
+            if fixed is None:
+                return SimpleNamespace(
+                    values={"eps_S": 0.7, "x": 2.0},
+                    nll=10.0,
+                    valid=True,
+                    edm_goal=1e-8,
+                )
+
+            return SimpleNamespace(
+                values={"eps_S": 0.8, "x": 1.5},
+                nll=10.5,
+                valid=True,
+                edm_goal=1e-8,
+            )
+
+    generation_params = {
+        "eps_S": 0.8,
+        "x": 1.0,
+    }
+
+    result = profile_likelihood_ratio(
+        DummyFitter(),
+        data=None,
+        poi_value=0.8,
+        start=generation_params,
+    )
+
+    assert result.valid
+
+    assert calls[0][0] == generation_params
+    assert calls[0][1] is None
+
+    assert calls[1][0] == generation_params
+    assert calls[1][1] == {"eps_S": 0.8}

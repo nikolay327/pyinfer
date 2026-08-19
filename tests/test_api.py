@@ -274,7 +274,7 @@ def test_builder(api_data):
         "A",
         "mu",
         "sig",
-        "c0",
+        "b0",
     )
 
 def test_feldman_cousins_api(analysis, monkeypatch):
@@ -301,10 +301,11 @@ def test_feldman_cousins_api(analysis, monkeypatch):
             captured["seed"] = seed
             captured["n_jobs"] = n_jobs
 
-        def run(self, data, poi_values, start):
+        def run(self, data, poi_values, start=None, start_factory=None):
             captured["data"] = data
             captured["poi_values"] = np.asarray(poi_values)
             captured["start"] = start
+            captured["start_factory"] = start_factory
             return "fc-result"
 
     monkeypatch.setattr(

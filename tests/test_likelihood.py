@@ -62,7 +62,7 @@ def test_binned_likelihood_matches_manual(gamma_problem):
     lam_B = likelihood.bg_model.integral(
         likelihood.bin_lo,
         likelihood.bin_hi,
-        pars["c0"],
+        pars["b0"],
     )
 
     lam_fail = (1 - pars["eps_S"]) * lam_S + (1 - pars["eps_B"]) * lam_B

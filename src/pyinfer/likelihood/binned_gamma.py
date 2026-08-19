@@ -1,4 +1,5 @@
 import numpy as np
+import scipy.stats as stats
 
 from .base import LikelihoodBase, Sequential
 from .poisson import Poisson
@@ -96,8 +97,40 @@ class BinnedLikelihood(LikelihoodBase):
         if np.any(data[:, 1] > data[:, 0]):
             raise ValueError("k_after cannot exceed k_before")
 
-        likelihood = self._make_likelihood(eps_S, eps_B, sig_pars, bg_pars)
-        return likelihood(*(tuple(obs) for obs in data))
+        if not 0 <= eps_S <= 1 or not 0 <= eps_B <= 1:
+            raise ValueError("Efficiencies must be between 0 and 1")
+
+        lam_S = np.asarray(
+            self.sig_model.integral(
+                self.bin_lo,
+                self.bin_hi,
+                *sig_pars,
+            )
+        )
+
+        lam_B = np.asarray(
+            self.bg_model.integral(
+                self.bin_lo,
+                self.bin_hi,
+                *bg_pars,
+            )
+        )
+
+        if np.any(~np.isfinite(lam_S)) or np.any(lam_S < 0):
+            raise ValueError("Signal expectations must be finite and non-negative")
+        if np.any(~np.isfinite(lam_B)) or np.any(lam_B < 0):
+            raise ValueError("Background expectations must be finite and non-negative")
+
+        k_pass = data[:, 1]
+        k_fail = data[:, 0] - data[:, 1]
+
+        lam_pass = eps_S * lam_S + eps_B * lam_B
+        lam_fail = (1 - eps_S) * lam_S + (1 - eps_B) * lam_B
+
+        return np.sum(
+            stats.poisson.logpmf(k_pass, lam_pass)
+            + stats.poisson.logpmf(k_fail, lam_fail)
+        )
 
     def sample(self, eps_S, eps_B, sig_pars, bg_pars, size=1, rng=None):
         likelihood = self._make_likelihood(eps_S, eps_B, sig_pars, bg_pars)

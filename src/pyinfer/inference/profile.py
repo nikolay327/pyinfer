@@ -18,60 +18,45 @@ class ProfileResult:
     @property
     def valid(self):
         return (
-            self.global_fit.valid
-            and self.conditional_fit.valid
+            np.isfinite(self.global_fit.nll)
+            and np.isfinite(self.conditional_fit.nll)
             and np.isfinite(self.q)
         )
 
 
-def _compute_q(global_fit, conditional_fit, tol=1e-8):
-    if not global_fit.valid or not conditional_fit.valid:
+def _compute_q(global_fit, conditional_fit):
+    if not np.isfinite(global_fit.nll) or not np.isfinite(conditional_fit.nll):
         return np.nan
 
-    delta = conditional_fit.nll - global_fit.nll
-
-    numerical_tol = max(
-        tol,
-        10.0 * global_fit.edm_goal,
-        10.0 * conditional_fit.edm_goal,
-    )
-
-    if delta < -numerical_tol:
-        return np.nan
-
-    return max(0.0, 2.0 * delta)
+    return 2.0 * (conditional_fit.nll - global_fit.nll)
 
 
 def profile_likelihood_ratio(
     fitter: MinuitFitter,
     data,
     poi_value: float,
-    start=None,
+    start,
     global_fit=None,
-    tol=1e-7,
+    fit_options=None,
 ):
     poi = fitter.parameter_map.poi
+    fit_options = {} if fit_options is None else dict(fit_options)
 
     if global_fit is None:
-        if start is None:
-            raise ValueError("start must be provided when global_fit is not given")
-        global_fit = fitter.fit(data, start)
-
-    if not global_fit.valid:
-        return ProfileResult(
-            poi_value=poi_value,
-            q=np.nan,
-            global_fit=global_fit,
-            conditional_fit=global_fit,
+        global_fit = fitter.fit(
+            data,
+            start=start,
+            **fit_options,
         )
 
     conditional_fit = fitter.fit(
         data,
-        start=global_fit.values,
+        start=start,
         fixed={poi: poi_value},
+        **fit_options,
     )
 
-    q = _compute_q(global_fit, conditional_fit, tol)
+    q = _compute_q(global_fit, conditional_fit)
 
     return ProfileResult(
         poi_value=poi_value,
@@ -81,33 +66,43 @@ def profile_likelihood_ratio(
     )
 
 
-def profile_scan(fitter: MinuitFitter, data, poi_values, start, tol=1e-7):
-    global_fit = fitter.fit(data, start)
+def profile_scan(
+    fitter: MinuitFitter,
+    data,
+    poi_values,
+    start,
+    fit_options=None,
+):
+    poi_values = np.asarray(poi_values, dtype=float)
+    fit_options = {} if fit_options is None else dict(fit_options)
 
-    if not global_fit.valid:
-        raise RuntimeError(
-            f"Global fit failed: {global_fit.failure_reason}"
-        )
+    if poi_values.ndim != 1 or len(poi_values) == 0:
+        raise ValueError("poi_values must be a non-empty one-dimensional array")
+
+    if np.any(~np.isfinite(poi_values)):
+        raise ValueError("poi_values must be finite")
+
+    global_fit = fitter.fit(
+        data,
+        start=start,
+        **fit_options,
+    )
+
+    if not np.isfinite(global_fit.nll):
+        raise RuntimeError("Global fit returned a non-finite NLL")
 
     poi = fitter.parameter_map.poi
-    conditional_start = global_fit.values
     results = []
 
     for poi_value in poi_values:
         conditional_fit = fitter.fit(
             data,
-            start=conditional_start,
+            start=start,
             fixed={poi: poi_value},
+            **fit_options,
         )
 
-        if not conditional_fit.valid:
-            conditional_fit = fitter.fit(
-                data,
-                start=global_fit.values,
-                fixed={poi: poi_value},
-            )
-
-        q = _compute_q(global_fit, conditional_fit, tol)
+        q = _compute_q(global_fit, conditional_fit)
 
         results.append(
             ProfileResult(
@@ -117,8 +112,5 @@ def profile_scan(fitter: MinuitFitter, data, poi_values, start, tol=1e-7):
                 conditional_fit=conditional_fit,
             )
         )
-
-        if conditional_fit.valid and np.isfinite(q):
-            conditional_start = conditional_fit.values
 
     return results

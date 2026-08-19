@@ -32,7 +32,11 @@ class FeldmanCousinsResult:
 
     @property
     def accepted_values(self):
-        return np.asarray([point.poi_value for point in self.points if point.accepted])
+        return np.asarray([
+            point.poi_value
+            for point in self.points
+            if point.accepted
+        ])
 
     @property
     def p_values(self):
@@ -47,7 +51,23 @@ class FeldmanCousinsResult:
         return np.asarray([point.q_crit for point in self.points])
 
 
-def _run_fc_point(problem, fitter, profile, seed_sequence, n_toys, confidence_level):
+def _get_start(data, start, start_factory):
+    if start_factory is not None:
+        return dict(start_factory(data))
+    return dict(start)
+
+
+def _run_fc_point(
+    problem,
+    fitter,
+    profile,
+    start,
+    start_factory,
+    seed_sequence,
+    n_toys,
+    confidence_level,
+    fit_options,
+):
     generation_params = dict(profile.conditional_fit.values)
 
     toy_seeds = seed_sequence.spawn(n_toys)
@@ -62,23 +82,30 @@ def _run_fc_point(problem, fitter, profile, seed_sequence, n_toys, confidence_le
             rng=rng,
         )[0]
 
+        toy_start = _get_start(
+            toy,
+            start,
+            start_factory,
+        )
+
         result = profile_likelihood_ratio(
             fitter,
             toy,
             profile.poi_value,
-            start=generation_params,
+            start=toy_start,
+            fit_options=fit_options,
         )
 
-        if result.valid:
+        if np.isfinite(result.q):
             q_toys[i] = result.q
 
     failed = np.flatnonzero(~np.isfinite(q_toys))
 
-    if len(failed) > 0:
+    if len(failed):
         raise RuntimeError(
-            f"{len(failed)}/{n_toys} toy fits failed for "
-            f"{fitter.parameter_map.poi}={profile.poi_value}. "
-            f"Failed toy indices: {failed.tolist()}"
+            f"{len(failed)}/{n_toys} toys returned non-finite test statistics "
+            f"for {fitter.parameter_map.poi}={profile.poi_value}. "
+            f"Toy indices: {failed.tolist()}"
         )
 
     q_crit = np.quantile(
@@ -93,10 +120,10 @@ def _run_fc_point(problem, fitter, profile, seed_sequence, n_toys, confidence_le
 
     return FCPointResult(
         poi_value=profile.poi_value,
-        q_obs=profile.q,
+        q_obs=float(profile.q),
         q_crit=float(q_crit),
         p_value=float(p_value),
-        accepted=profile.q <= q_crit,
+        accepted=bool(profile.q <= q_crit),
         generation_params=generation_params,
         q_toys=q_toys,
         n_toys=n_toys,
@@ -114,6 +141,7 @@ class FeldmanCousins:
         n_toys=1000,
         seed=None,
         n_jobs=1,
+        fit_options=None,
     ):
         if not 0 < confidence_level < 1:
             raise ValueError("confidence_level must be between 0 and 1")
@@ -121,7 +149,9 @@ class FeldmanCousins:
         if not isinstance(n_toys, int) or n_toys <= 0:
             raise ValueError("n_toys must be a positive integer")
 
-        if n_jobs is not None and (not isinstance(n_jobs, int) or n_jobs <= 0):
+        if n_jobs is not None and (
+            not isinstance(n_jobs, int) or n_jobs <= 0
+        ):
             raise ValueError("n_jobs must be a positive integer or None")
 
         self.problem = problem
@@ -130,21 +160,25 @@ class FeldmanCousins:
         self.n_toys = n_toys
         self.seed = seed
         self.n_jobs = n_jobs
+        self.fit_options = {} if fit_options is None else dict(fit_options)
 
-    def _run_serial(self, profiles, point_seeds):
+    def _run_serial(self, profiles, start, start_factory, point_seeds):
         return [
             _run_fc_point(
                 self.problem,
                 self.fitter,
                 profile,
+                start,
+                start_factory,
                 point_seed,
                 self.n_toys,
                 self.confidence_level,
+                self.fit_options,
             )
             for profile, point_seed in zip(profiles, point_seeds)
         ]
 
-    def _run_parallel(self, profiles, point_seeds):
+    def _run_parallel(self, profiles, start, start_factory, point_seeds):
         points = [None] * len(profiles)
 
         with ProcessPoolExecutor(max_workers=self.n_jobs) as executor:
@@ -154,11 +188,16 @@ class FeldmanCousins:
                     self.problem,
                     self.fitter,
                     profile,
+                    start,
+                    start_factory,
                     point_seed,
                     self.n_toys,
                     self.confidence_level,
+                    self.fit_options,
                 ): i
-                for i, (profile, point_seed) in enumerate(zip(profiles, point_seeds))
+                for i, (profile, point_seed) in enumerate(
+                    zip(profiles, point_seeds)
+                )
             }
 
             for future in as_completed(futures):
@@ -167,7 +206,13 @@ class FeldmanCousins:
 
         return points
 
-    def run(self, data, poi_values, start):
+    def run(
+        self,
+        data,
+        poi_values,
+        start=None,
+        start_factory=None,
+    ):
         poi_values = np.asarray(poi_values, dtype=float)
 
         if poi_values.ndim != 1 or len(poi_values) == 0:
@@ -176,18 +221,35 @@ class FeldmanCousins:
         if np.any(~np.isfinite(poi_values)):
             raise ValueError("poi_values must be finite")
 
+        if start is None and start_factory is None:
+            raise ValueError("Either start or start_factory must be provided")
+
+        if start is not None and start_factory is not None:
+            raise ValueError("Provide either start or start_factory, not both")
+
+        observed_start = _get_start(
+            data,
+            start,
+            start_factory,
+        )
+
         profiles = profile_scan(
             self.fitter,
             data,
             poi_values,
-            start,
+            start=observed_start,
+            fit_options=self.fit_options,
         )
 
-        invalid = [profile.poi_value for profile in profiles if not profile.valid]
+        invalid = [
+            profile.poi_value
+            for profile in profiles
+            if not profile.valid
+        ]
 
         if invalid:
             raise RuntimeError(
-                f"Observed profile fits failed for "
+                f"Observed profile returned non-finite values for "
                 f"{self.fitter.parameter_map.poi}={invalid}"
             )
 
@@ -195,9 +257,19 @@ class FeldmanCousins:
         point_seeds = root_seed.spawn(len(profiles))
 
         if self.n_jobs == 1:
-            points = self._run_serial(profiles, point_seeds)
+            points = self._run_serial(
+                profiles,
+                start,
+                start_factory,
+                point_seeds,
+            )
         else:
-            points = self._run_parallel(profiles, point_seeds)
+            points = self._run_parallel(
+                profiles,
+                start,
+                start_factory,
+                point_seeds,
+            )
 
         return FeldmanCousinsResult(
             confidence_level=self.confidence_level,

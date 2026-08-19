@@ -25,14 +25,14 @@ class FitResult:
     @property
     def failure_reason(self):
         reasons = []
-
         if self.reached_call_limit:
             reasons.append("call limit")
         if self.above_max_edm:
             reasons.append("EDM above threshold")
         if not np.isfinite(self.nll):
             reasons.append("non-finite NLL")
-
+        if not self.valid and not reasons:
+            reasons.append("invalid minimum")
         return ", ".join(reasons) if reasons else None
 
 
@@ -58,7 +58,20 @@ class MinuitFitter:
 
         return nll
 
-    def fit(self, data, start, fixed=None, hesse=False, retry=True, ncall=None):
+    def fit(
+        self,
+        data,
+        start,
+        fixed=None,
+        hesse=False,
+        retry=True,
+        ncall=None,
+        strategy=1,
+        tol=None,
+        iterate=5,
+        use_simplex=True,
+        retry_strategy=2,
+    ):
         start = dict(start)
         fixed = {} if fixed is None else dict(fixed)
         names = self.parameter_map.names
@@ -75,6 +88,15 @@ class MinuitFitter:
         if unknown_limits:
             raise ValueError(f"Unknown parameter limits: {unknown_limits}")
 
+        if strategy not in (0, 1, 2):
+            raise ValueError("strategy must be 0, 1, or 2")
+        if retry_strategy not in (0, 1, 2):
+            raise ValueError("retry_strategy must be 0, 1, or 2")
+        if not isinstance(iterate, int) or iterate <= 0:
+            raise ValueError("iterate must be a positive integer")
+        if tol is not None and (not np.isfinite(tol) or tol <= 0):
+            raise ValueError("tol must be finite and positive")
+
         for name, value in fixed.items():
             start[name] = value
 
@@ -88,6 +110,10 @@ class MinuitFitter:
         )
 
         minuit.errordef = Minuit.LIKELIHOOD
+        minuit.strategy = strategy
+
+        if tol is not None:
+            minuit.tol = tol
 
         for name, limit in self.limits.items():
             minuit.limits[name] = limit
@@ -95,12 +121,20 @@ class MinuitFitter:
         for name in fixed:
             minuit.fixed[name] = True
 
-        minuit.migrad(ncall=ncall)
+        minuit.migrad(
+            ncall=ncall,
+            iterate=iterate,
+            use_simplex=use_simplex,
+        )
 
         if retry and not minuit.valid:
-            minuit.simplex()
-            minuit.strategy = 2
-            minuit.migrad(ncall=ncall)
+            minuit.strategy = retry_strategy
+            minuit.simplex(ncall=ncall)
+            minuit.migrad(
+                ncall=ncall,
+                iterate=iterate,
+                use_simplex=use_simplex,
+            )
 
         if hesse and minuit.valid:
             minuit.hesse()

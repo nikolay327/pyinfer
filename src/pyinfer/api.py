@@ -1,3 +1,5 @@
+from functools import partial
+
 import numpy as np
 
 from .builder import GammaLineProblemBuilder
@@ -5,6 +7,34 @@ from .config import GammaLineConfig
 from .inference.feldman_cousins import FeldmanCousins
 from .inference.fit import MinuitFitter
 from .inference.profile import profile_scan
+
+
+def _gamma_start_from_data(
+    data,
+    config,
+    bin_edges,
+    eps_S,
+    eps_B,
+    overrides,
+):
+    data = np.asarray(data)
+
+    if data.ndim != 2 or data.shape[1] != 2:
+        raise ValueError("data must have shape (n_bins, 2)")
+
+    builder = GammaLineProblemBuilder(config)
+
+    initialization = builder.initialize(
+        bin_edges,
+        data[:, 0],
+        eps_S,
+        eps_B,
+    )
+
+    start = dict(initialization.start)
+    start.update(overrides)
+
+    return start
 
 
 class GammaLineAnalysis:
@@ -76,6 +106,30 @@ class GammaLineAnalysis:
 
         return values
 
+    def _resolve_start_overrides(self, start):
+        initialization = self._require_initialization()
+
+        if start is None:
+            return {}
+
+        unknown = [name for name in start if name not in initialization.start]
+        if unknown:
+            raise ValueError(f"Unknown initial parameters: {unknown}")
+
+        return dict(start)
+
+    def _make_start_factory(self, start=None):
+        initialization = self._require_initialization()
+
+        return partial(
+            _gamma_start_from_data,
+            config=self.config,
+            bin_edges=self.bin_edges,
+            eps_S=initialization.start["eps_S"],
+            eps_B=initialization.start["eps_B"],
+            overrides=self._resolve_start_overrides(start),
+        )
+
     def _resolve_limits(self, limits):
         initialization = self._require_initialization()
         values = dict(initialization.limits)
@@ -94,7 +148,19 @@ class GammaLineAnalysis:
             limits=self._resolve_limits(limits),
         )
 
-    def fit(self, start=None, limits=None, hesse=False, retry=True, ncall=None):
+    def fit(
+        self,
+        start=None,
+        limits=None,
+        hesse=False,
+        retry=True,
+        ncall=None,
+        strategy=1,
+        tol=None,
+        iterate=5,
+        use_simplex=True,
+        retry_strategy=2,
+    ):
         fitter = self._make_fitter(limits)
 
         return fitter.fit(
@@ -103,9 +169,20 @@ class GammaLineAnalysis:
             hesse=hesse,
             retry=retry,
             ncall=ncall,
+            strategy=strategy,
+            tol=tol,
+            iterate=iterate,
+            use_simplex=use_simplex,
+            retry_strategy=retry_strategy,
         )
 
-    def profile(self, poi_values, start=None, limits=None, tol=1e-7):
+    def profile(
+        self,
+        poi_values,
+        start=None,
+        limits=None,
+        fit_options=None,
+    ):
         fitter = self._make_fitter(limits)
 
         return profile_scan(
@@ -113,7 +190,7 @@ class GammaLineAnalysis:
             self.data,
             poi_values,
             start=self._resolve_start(start),
-            tol=tol,
+            fit_options=fit_options,
         )
 
     def feldman_cousins(
@@ -125,20 +202,28 @@ class GammaLineAnalysis:
         n_jobs=1,
         start=None,
         limits=None,
+        fit_options=None,
     ):
         fitter = self._make_fitter(limits)
+
+        fc_kwargs = {
+            "confidence_level": confidence_level,
+            "n_toys": n_toys,
+            "seed": seed,
+            "n_jobs": n_jobs,
+        }
+
+        if fit_options is not None:
+            fc_kwargs["fit_options"] = fit_options
 
         fc = FeldmanCousins(
             self.problem,
             fitter,
-            confidence_level=confidence_level,
-            n_toys=n_toys,
-            seed=seed,
-            n_jobs=n_jobs,
+            **fc_kwargs,
         )
 
         return fc.run(
             self.data,
             poi_values,
-            start=self._resolve_start(start),
+            start_factory=self._make_start_factory(start),
         )

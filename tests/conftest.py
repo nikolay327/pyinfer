@@ -34,7 +34,7 @@ def gamma_problem():
         "A": 300.0,
         "mu": 0.2,
         "sig": 0.8,
-        "c0": 25.0,
+        "b0": 25.0,
     }
 
     return problem, pars, bin_edges
